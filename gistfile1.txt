@@ -1,0 +1,167 @@
+const { Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers, // Indispensable pour détecter l'arrivée des membres
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.DirectMessages // Indispensable pour les questionnaires en MP
+    ],
+    partials: [Partials.Channel, Partials.Message]
+});
+
+// IDs à configurer (remplace par tes propres IDs de salons et rôles)
+const CONFIG = {
+    WELCOME_CHANNEL_ID: 'ID_CANAL_BIENVENUE',
+    ANNOUNCE_CHANNEL_ID: 'ID_CANAL_ANNONCES',
+    STAFF_LOG_ID: 'ID_CANAL_LOGS_STAFF', // Où envoyer les réponses pour validation
+    WHITELIST_ROLE_ID: 'ID_ROLE_WHITELIST' // Le rôle à donner une fois accepté
+};
+
+client.once('ready', () => {
+    console.log(`Bot connecté en tant que ${client.user.tag} !`);
+});
+
+// ==========================================
+// 1. SYSTÈME DE WHITELIST (Arrivée + Questionnaire MP)
+// ==========================================
+
+client.on('guildMemberAdd', async (member) => {
+    try {
+        // Envoi d'un message privé au nouveau membre
+        const dmChannel = await member.createDM();
+        
+        const embed = new EmbedBuilder()
+            .setTitle('Bienvenue sur le serveur !')
+            .setDescription("Pour accéder au serveur, tu dois passer la **whitelist**. Clique sur le bouton ci-dessous pour commencer le questionnaire.")
+            .setColor(0x00AE86);
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('start_wl')
+                .setLabel('Commencer la Whitelist')
+                .setStyle(ButtonStyle.Primary)
+        );
+
+        await dmChannel.send({ embeds: [embed], components: [row] });
+    } catch (error) {
+        console.error(`Impossible d'envoyer un MP à ${member.user.tag} :`, error);
+    }
+});
+
+// Gestion des interactions (Boutons et Modals)
+client.on('interactionCreate', async (interaction) => {
+    if (interaction.isButton() && interaction.customId === 'start_wl') {
+        // Affichage du questionnaire (Modal)
+        const modal = new ModalBuilder()
+            .setCustomId('wl_modal')
+            .setTitle('Questionnaire Whitelist');
+
+        const q1 = new TextInputBuilder()
+            .setCustomId('age')
+            .setLabel('Quel âge as-tu ?')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
+
+        const q2 = new TextInputBuilder()
+            .setCustomId('motivation')
+            .setLabel('Pourquoi veux-tu rejoindre le serveur ?')
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true);
+
+        modal.addComponents(
+            new ActionRowBuilder().addComponents(q1),
+            new ActionRowBuilder().addComponents(q2)
+        );
+
+        await interaction.showModal(modal);
+    }
+
+    else if (interaction.isModalSubmit() && interaction.customId === 'wl_modal') {
+        const age = interaction.fields.getTextInputValue('age');
+        const motivation = interaction.fields.getTextInputValue('motivation');
+
+        await interaction.reply({ content: 'Tes réponses ont bien été envoyées au staff ! Tu seras contacté rapidement.', ephemeral: true });
+
+        // Envoi des réponses dans le salon des logs pour le staff
+        const guild = client.guilds.cache.first();
+        const staffChannel = guild.channels.cache.get(CONFIG.STAFF_LOG_ID);
+
+        if (staffChannel) {
+            const logEmbed = new EmbedBuilder()
+                .setTitle('Nouvelle candidature Whitelist')
+                .addFields(
+                    { name: 'Utilisateur', value: `${interaction.user.tag} (<@${interaction.user.id}>)` },
+                    { name: 'Âge', value: age },
+                    { name: 'Motivation', value: motivation }
+                )
+                .setColor(0xFFA500)
+                .setTimestamp();
+
+            // Boutons Accepter / Refuser pour le staff
+            const staffRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`accept_${interaction.user.id}`).setLabel('Accepter').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId(`refuse_${interaction.user.id}`).setLabel('Refuser').setStyle(ButtonStyle.Danger)
+            );
+
+            await staffChannel.send({ embeds: [logEmbed], components: [staffRow] });
+        }
+    }
+
+    // Gestion de la validation par le staff
+    if (interaction.isButton() && (interaction.customId.startsWith('accept_') || interaction.customId.startsWith('refuse_'))) {
+        const [action, userId] = interaction.customId.split('_');
+        const guild = interaction.guild;
+        const member = await guild.members.fetch(userId).catch(() => null);
+
+        if (!member) {
+            return interaction.reply({ content: "Membre introuvable ou ayant quitté le serveur.", ephemeral: true });
+        }
+
+        if (action === 'accept') {
+            await member.roles.add(CONFIG.WHITELIST_ROLE_ID);
+            await interaction.update({ content: `Candidature **acceptée** par ${interaction.user.tag}.`, components: [] });
+            
+            member.send("Félicitations ! Ta candidature whitelist a été acceptée, tu as désormais accès au serveur.").catch(() => {});
+        } else {
+            await interaction.update({ content: `Candidature **refusée** par ${interaction.user.tag}.`, components: [] });
+            member.send("Malheureusement, ta candidature whitelist a été refusée.").catch(() => {});
+        }
+    }
+});
+
+// ==========================================
+// 2. COMMANDE D'ANNONCE (/annonce)
+// ==========================================
+
+client.on('messageCreate', async (message) => {
+    if (message.content.startsWith('!annonce')) {
+        if (!message.member.permissions.has('Administrator')) {
+            return message.reply("Tu n'as pas la permission d'utiliser cette commande.");
+        }
+
+        const args = message.content.slice(9).trim();
+        if (!args) {
+            return message.reply("Écris le texte de l'annonce après la commande. Exemple : `!annonce Bonjour à tous !`");
+        }
+
+        const announceChannel = message.guild.channels.cache.get(CONFIG.ANNOUNCE_CHANNEL_ID);
+        if (!announceChannel) {
+            return message.reply("Salon d'annonces introuvable dans la configuration.");
+        }
+
+        const announceEmbed = new EmbedBuilder()
+            .setTitle('📢 Annonce officielle')
+            .setDescription(args)
+            .setColor(0x0099FF)
+            .setTimestamp()
+            .setFooter({ text: `Annonce postée par ${message.author.tag}` });
+
+        await announceChannel.send({ embeds: [announceEmbed] });
+        await message.delete().catch(() => {});
+    }
+});
+
+// Connexion du bot avec ton token
+client.login('MTUyOTY0OTczMzEzMDI1NjQxNQ.GeMaE5.jBv9iVJh76p5PhXM6dpTzxUEElVhTbGUG3cTmA');
