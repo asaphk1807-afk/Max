@@ -164,4 +164,4 @@ client.on('messageCreate', async (message) => {
 });
 
 // Connexion du bot avec ton token
-client.login('MTUyOTY0OTczMzEzMDI1NjQxNQ.GeMaE5.jBv9iVJh76p5PhXM6dpTzxUEElVhTbGUG3cTmA');
+client.login('MTUzMTQwOTQ1NjI0MjM2MDQ5MQ.GF86sA.NTw3qKrPrLjYLTxT8gHJAYps9ypf0Gp8Ej_jdA');
